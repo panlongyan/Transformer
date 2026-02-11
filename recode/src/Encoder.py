@@ -37,10 +37,10 @@ class PositionnalEncoding(nn.Module):
         # 决定位置编码中每个维度频率的参数
         div_term = torch.exp(torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model))
 
-        # 正弦频率插入到位置编码矩阵：对偶数位置插入正弦频率
+        # 正弦频率插入到位置编码矩阵：对偶数列插入正弦频率
         pe[:, 0::2] = torch.sin(position * div_term)
 
-        # 余弦频率插入到位置编码矩阵：奇数位置插入余弦频率
+        # 余弦频率插入到位置编码矩阵：奇数列插入余弦频率
         pe[:, 1::2] = torch.cos(position * div_term)
 
         # 在第一个位置扩展为三维
@@ -59,18 +59,86 @@ class PositionnalEncoding(nn.Module):
         return self.dropout(x)
 
 
-
-
 class MutiHeadAttention(nn.Module):
-    """多头注意力"""
+    """
+    多头注意力
+    Q、K、V → 分别进入三个线性层 → Q、K、V每个输出都转化为多头的形式(向量拆分为多头的形式)
+    → 输入Q、K、V计算注意力结果、注意力权重 → 注意力结果经过最后线性层输出
+
+    """
     def __init__(self, h, d_model, dropout=0.1):
         """初始化"""
         super(MutiHeadAttention, self).__init__()
 
+        # 确保能够均分向量多头
+        assert d_model % h == 0
+        # 头的数量
+        self.h = h 
+        # 获取每个头维度
+        self.d_k = d_model // h
+        # 定义多个线性层存入一个列表模块: 四个线性层（前三个线性层分别独立处理Q，V，K，最后一个线性层处理输出）
+        self.linears = nn.ModuleList([nn.Linear(d_model, d_model) for _ in range(4)])
+        # 注意力
+        self.attn = None
+        # 失活
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, query, key, value, mask=None):
+        """前向传播"""
+
+        # 如果存在掩码，则将其扩展为三维
+        if mask is not None:
+            mask = mask.unsqueeze(1)
+
+        # 当前批次的样本数量
+        nbatches = query.size(0)
+
+        # 1.执行线性变换:Q、K、V分别进入到各自独立的线性层,并转化为多头的形式(d_model => h x d_k)
+        query, key, value = [
+            lin(x).view(nbatches, -1, self.h, self.d_k).transpose(1,2)
+            for lin, x in zip(self.linears,(query,key,value))
+        ]
+
+        # 2.计算注意力和权重(带掩膜)
+        x, self.attn = self._attention(query, key, value, mask=mask, dropout=self.dropout)
+
+        # 3.多头注意力合并
+        x = (
+            x.transpose((1,2)).contiguous().view(nbatches, -1, self.h * self.d_k)
+        )
+
+        # 4.最后线性层输出
+        x = self.linears[-1](x)
+
+        
+        # 返回多头注意力结果
+        del query, key, value
+        return x
 
 
+    def _attention(self, query, key, value, mask=None, dropout=None):
+        """计算缩放点积注意力"""
 
+        # 每个头的维度
+        d_k = query.size(-1)
+        # Q、V计算得分
+        scores = torch.matmul(query, key.transpose(-2,-1)) / math.sqrt(d_k)
+        # 掩膜处理:遍历循环，将mask中的0位置的元素设置为-1e9
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        
+        # 注意力权重/概率:对最后一个维度应用softmax函数归一化为概率分布
+        p_attn = scores.softmax(dim=-1)
 
+        # 注意力权重失活
+        if drop_out is not None:
+            p_attn = dropout(p_attn)
+
+        # 计算注意力输出：注意力权重点乘V
+        x = torch.matmul(p_attn, value)
+
+        # 返回注意力
+        return x, p_attn
 
 
 
@@ -109,9 +177,6 @@ class PositionwiseFeedForward(nn.Module):
         x = self.dropout(x)
 
         return x
-
-
-
 
 
 class LayerNorm(nn.Module):
