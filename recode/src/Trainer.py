@@ -2,6 +2,9 @@
 
 import time
 import torch.distributed as dist # 分布式训练包
+import torch.multiprocessing as mp # torch多进程计算模块
+
+
 
 class TrainState():
     """训练状态类"""
@@ -310,7 +313,14 @@ class Trainer():
             torch.save(module.state_dict(), file_path)
 
     def train_distributed_model(self,):
-        """分布式训练：多个训练"""
+        """分布式训练：多个训练进程"""
+
+        # 获得机器GPU数量
+        ngpus = torch.cuda.device_count()
+        # 主节点地址
+        os.environ["MASTER_ADDR"]="localhost"
+        # 主节点端口
+        os.environ["MASTER_PORT"]="12345"
         pass
 
 
